@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#001f4d">
+  <style>
+    /* Lock window interactivity */
+    * {
+      box-sizing: border-box;
+      user-select: none;
+      -webkit-user-select: none;
+      cursor: default;
+    }
+
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100vw;
+      height: 100vh;
+      /* Premium Office-style blue series multi-stop gradient background */
+      background: #001f4d;
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      overflow: hidden;
+    }
+
+    /* Branding wrapper context */
+    .brand-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      flex-grow: 1;
+      padding: 2rem;
+      text-align: center;
+    }
+
+    /* Embedded Brand Vector Area Wrapper */
+    .brand-logo-svg {
+      width: 100px;
+      height: 100px;
+      margin-bottom: 1.25rem;
+      filter: drop-shadow(0 8px 16px rgba(0, 0, 0, 0.3));
+      opacity: 0;
+      animation: emergeFromBack 0.7s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+      animation-delay: 0.3s;
+    }
+
+    .brand-title {
+      font-size: 1.85rem;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      margin: 0 0 0.5rem 0;
+      text-transform: uppercase;
+      color: #ffffff;
+      text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+      opacity: 0;
+      animation: emergeFromBack 0.7s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+      animation-delay: 0.7s;
+    }
+
+    .brand-subtitle {
+      font-size: 0.9rem;
+      font-weight: 400;
+      color: #c8e1ff; /* Accent sky hue */
+      letter-spacing: 0.8px;
+      margin: 0;
+      opacity: 0;
+      animation: emergeFromBack 0.7s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+      animation-delay: 0.8s;
+    }
+
+    /* Content scales up from a smaller, distant point with a slight blur,
+       as if drifting forward out of the background, then settles sharp.
+       This is the "coming from the back" effect. */
+    @keyframes emergeFromBack {
+      0% {
+        opacity: 0;
+        transform: scale(0.75) translateY(6px);
+        filter: blur(4px);
+      }
+      60% {
+        opacity: 1;
+        filter: blur(0px);
+      }
+      100% {
+        opacity: 1;
+        transform: scale(1) translateY(0);
+        filter: blur(0px);
+      }
+    }
+
+    /* Footer structure layout */
+    .footer-container {
+      width: 100%;
+      padding: 0 2.5rem 2.5rem 2.5rem;
+      opacity: 0;
+      animation: fadeInFooter 0.6s ease-out forwards;
+      animation-delay: 0.7s;
+    }
+
+    @keyframes fadeInFooter {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+
+    /* Progress baseline layout track */
+    .progress-bar-container {
+      position: relative;
+      width: 100%;
+      height: 4px;
+      background-color: rgba(255, 255, 255, 0.15);
+      border-radius: 2px;
+      overflow: hidden;
+      margin-bottom: 1rem;
+      box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.1);
+    }
+
+    /* Floating high-contrast indicator strip */
+    .progress-bar-fluid {
+      position: absolute;
+      background: #ffffff;
+      height: 100%;
+      width: 30%;
+      border-radius: 2px;
+      box-shadow: 0 0 8px #ffffff;
+      animation: fluentProgress 1.8s infinite ease-in-out;
+    }
+
+    .status-text {
+      font-size: 0.8rem;
+      color: #a9cdff;
+      margin: 0;
+      font-weight: 400;
+    }
+
+    /* Seamless Fluent Loop tracker logic */
+    @keyframes fluentProgress {
+      0% {
+        left: -30%;
+        right: 100%;
+      }
+      50% {
+        left: 70%;
+        right: -20%;
+      }
+      100% {
+        left: 100%;
+        right: -30%;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Core App Branding Entry Point -->
+  <div class="brand-container">
+    <div class="brand-logo-svg">
+      <!-- Your Custom Brand Logo SVG -->
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" width="100%" height="100%">
+        <g transform="translate(15, 0)">
+          <polygon points="204,152 268,152 176,448 112,448" fill="#0066ff" />
+          <polygon points="288,152 352,152 260,448 196,448" fill="#ff6600" />
+          <polygon points="372,152 436,152 344,448 280,448" fill="#00b040" />
+        </g>
+      </svg>
+    </div> 
+    <h1 class="brand-title">SMART WEIGHHUB</h1>
+    <p class="brand-subtitle">Your Partener in Precision</p>
+  </div>
+
+  <!-- Loading Processing Track Elements -->
+  <div class="footer-container">
+    <div class="progress-bar-container">
+      <div class="progress-bar-fluid"></div>
+    </div>
+    <p class="status-text">Starting backend engine...</p>
+  </div>
+<script type="module">
+  import { emit } from '@tauri-apps/api/event';
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  window.addEventListener('DOMContentLoaded', () => {
+    sleep(9000);
+    emit('splashscreen-ready');
+    
+  });
+</script>
+</body>
+</html>
