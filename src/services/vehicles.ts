@@ -69,3 +69,11 @@ export async function UpdatedVehicleTareWeight(id: number, tareWeight: number) {
     [tareWeight, id]
   );
 }
+
+export async function ReadVehicleById(id: number): Promise<VehicleRecords | null> {
+  const rows = await db.select<VehicleRecords[]>(
+    "SELECT * FROM vehicles WHERE id = ?",
+    [id]
+  );
+  return rows[0] ?? null;
+}

@@ -1,15 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ReadVehicles, VehicleRecords, UpdatedVehicleTareWeight, CreateVehicle } from "../services/vehicles";
-import { createTicketRecord, TicketRecord, ReadTicket, ReadTicketByNumber } from "../services/database";
+import { ReadVehicles, VehicleRecords, UpdatedVehicleTareWeight, CreateVehicle, ReadVehicleById } from "../services/vehicles";
+import { createTicketRecord, TicketRecord, ReadTicket, ReadTicketByNumber, ReadUserById } from "../services/database";
 import { useSerialConnection } from "../context/SerialConnectionContext";
 import { invoke } from "@tauri-apps/api/core";
 import { PrinterIcon, Settings } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { executeSilentHtmlPrint } from "../services/printer";
-import { PrinterSettings, getPrinterSettings, buildInvoiceHtml } from "../services/PrinterSetting";
+import { PrinterSettings, getPrinterSettings, buildInvoiceHtml, mapTicketRow, withVehicle } from "../services/PrinterSetting";
 import {
   listEntries,MasterEntry
 } from "../services/masterData";
+import { loadScaleSettings } from "./setting";
 
 // ---------------------------------------------------------------------
 // MOCK DATA — Party/Commodity/Charges have no backing tables yet, so
@@ -501,7 +502,7 @@ export default function SlipEntryLayout() {
   const previewHtml = useMemo(() => {
     if (!draftTicket) return null;
     try {
-      return buildInvoiceHtml(draftTicket);
+      return buildInvoiceHtml(draftTicket, { operatorName: currentUser?.fullName });
     } catch (e) {
       console.error("Preview build failed:", e);
       return null;
@@ -514,14 +515,24 @@ export default function SlipEntryLayout() {
     try {
       if (lastTicketNo !== "—") {
         const rows = await ReadTicketByNumber(lastTicketNo);
-        const ticket = rows[0];
+        const raw: any = rows[0];
+
+        if (!raw) {
+          setPrintError("Ticket not found.");
+          return;
+        }
+
+        const ticket = mapTicketRow(rows[0]);
 
         if (!ticket) {
           setPrintError("Ticket not found.");
           return;
         }
+       
+        const vehicle = await ReadVehicleById(ticket.vehicle_id);
+        const operatorName = await ReadUserById(ticket.user_id);
+        const html = buildInvoiceHtml(withVehicle(ticket, vehicle), { operatorName });
 
-        const html = buildInvoiceHtml(ticket);
         await executeSilentHtmlPrint(html);
       } else {
         setPrintError("Save the ticket before printing.");
@@ -536,34 +547,29 @@ export default function SlipEntryLayout() {
   };
 
   
-
- 
-
-  const SCALE_SETTINGS_KEY = "scale-settings";
- 
-  const [port] = useState(() => {
-      try {
-          const saved = localStorage.getItem(SCALE_SETTINGS_KEY);
-          return saved ? JSON.parse(saved).selectedSerialPort : "";
-        } catch { return ""; }
-  });
-
-  const [baud] = useState(() => {
-      try {
-          const saved = localStorage.getItem(SCALE_SETTINGS_KEY);
-          return saved ? JSON.parse(saved).baudRate : "";
-        } catch { return ""; }
-  });
- 
   useEffect(() => {
     party_names();
     commodities();
     truck();
-  }, [port]);
+    //test();
+  }, );
 
   const handleConnect = () => {
-    startReading(port, baud);
-  };
+  const s = loadScaleSettings();
+
+  if (!s || !s.indicator1Port) {
+    console.error("Scale not configured. Open COM Settings and save first.");
+    return;
+  }
+
+  startReading(
+    s.indicator1Port,
+    s.indicator2Port,
+    s.indicator3Port,
+    s.baudRate,
+    s.jumboDisplayPort
+  );
+};
 
  //COMMODITIES AND TRUCKTYPE AND COMPANY
 const truck=async ()=>{
@@ -592,7 +598,10 @@ const party_names=async ()=>{
       }
     }
 }
-  
+
+
+
+
 
   return (
     <div className="h-screen w-screen bg-blue-100 flex items-center justify-center p-3 font-mono overflow-hidden">

@@ -147,9 +147,37 @@ export default function LoginPage() {
           
           {/* Banner Content Typography */}
           <div className="relative z-10 max-w-sm space-y-4">
-            <h2 className="text-3xl font-mono font-bold text-blue-900  uppercase tracking-wider">
-              Welcome  Back!
+            <h2 className="text-3xl text-left font-mono font-bold text-blue-900  uppercase tracking-wider">
+              Flintech weighing
             </h2>
+
+            <div>
+              
+              <div className=" flex flex-row gap-2 text-blue-900 ">
+                 <span>
+                   Address: 
+                 </span>
+                 <p>P.BOX 2233 , TEMEKE DAR ES SALAAM</p>
+              </div>
+              <div className=" flex flex-row gap-2 text-blue-900 ">
+                 <span>
+                   Email:
+                 </span>
+                 <p>info@flintechweighing.com</p>
+              </div>
+              <div className=" flex flex-row gap-2 text-blue-900">
+                 <span>
+                   Web:
+                 </span>
+                 <p>www.flintechweighing.com</p>
+              </div>
+              <div className=" flex flex-row gap-2 text-blue-900">
+                 <span>
+                   Phone:
+                 </span>
+                 <p>+255 679 816 342/+255 785 760 010</p>
+              </div>
+            </div>
           </div>
         </div>
 

@@ -9,8 +9,12 @@ use std::time::Instant;
 use tauri_plugin_printer_v2;
 use std::sync::Mutex;
 use tauri::Listener;
+use std::io::Write;
+use tauri::{AppHandle, State};
 
-#[derive(Clone, serde::Serialize)]
+
+
+#[derive(Clone, serde::Serialize, Debug, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum ConnectionStatus {
     Disconnected,
@@ -20,19 +24,52 @@ pub enum ConnectionStatus {
     Stale,
 }
 
+#[derive(Clone, Serialize)]
+pub struct ScaleStateInfo {
+    pub status: ConnectionStatus,
+    pub last_error: Option<String>,
+    pub current_weight: i64,
+    #[serde(skip)]
+    pub last_reading_at: Instant,
+}
+
+impl Default for ScaleStateInfo {
+    fn default() -> Self {
+        Self {
+            status: ConnectionStatus::Disconnected,
+            last_error: None,
+            current_weight: 0,
+            last_reading_at: Instant::now(),
+        }
+    }
+}
+
 pub struct SerialState {
-    pub status: Mutex<ConnectionStatus>,
-    pub last_error: Mutex<Option<String>>,
+    pub scale1: std::sync::Mutex<ScaleStateInfo>,
+    pub scale2: std::sync::Mutex<ScaleStateInfo>,
+    pub scale3: std::sync::Mutex<ScaleStateInfo>,
+    pub system_active: std::sync::Mutex<bool>,
+    // These restore compatibility with your existing get_connection_status command
+    pub status: std::sync::Mutex<ConnectionStatus>, 
+    pub last_error: std::sync::Mutex<Option<String>>,
 }
 
 impl Default for SerialState {
     fn default() -> Self {
         SerialState {
+            scale1: Mutex::new(ScaleStateInfo::default()),
+            scale2: Mutex::new(ScaleStateInfo::default()),
+            scale3: Mutex::new(ScaleStateInfo::default()),
+            system_active: Mutex::new(false),
+             // Set the baseline connection status to disconnected
             status: Mutex::new(ConnectionStatus::Disconnected),
-            last_error: Mutex::new(None),
+            // Wrap None inside the Mutex to initialize an empty error state
+            last_error: Mutex::new(None), 
         }
     }
 }
+
+
 #[derive(Serialize)]
 struct SerialPortInfo {
     name: String,
@@ -111,134 +148,176 @@ fn parse_weight_line(line: &str) -> Option<WeightReading> {
 }
 
 
+// Keep your existing SerialState struct exactly as you had it, 
+// but add a global status field so your original `get_connection_status` command remains unbroken!
 
 
 #[tauri::command]
 fn start_serial_reading(
-    app: tauri::AppHandle,
-    state: tauri::State<SerialState>,
-    port_name: String,
+    app: AppHandle,
+    state: State<SerialState>,
+    port_scale1: String,
+    port_scale2: String,
+    port_scale3: String,
     baud_rate: u32,
+    jumbo_port: String,
 ) -> Result<(), String> {
-    // Guard against spawning a second reader thread while one is already
-    // connected/connecting — otherwise reconnect clicks stack up threads.
+    
+    // System lock guard matching your logic requirements
     {
-        let current = state.status.lock().unwrap();
-        if matches!(*current, ConnectionStatus::Connected | ConnectionStatus::Connecting) {
-            return Err("Already connected or connecting".into());
+        let mut active = state.system_active.lock().unwrap();
+        if *active {
+            return Err("System already running".into());
         }
+        *active = true;
     }
 
     *state.status.lock().unwrap() = ConnectionStatus::Connecting;
 
-    // Clone an Arc-free handle we can move into the thread. Since Tauri's
-    // managed state isn't directly Send into a raw thread::spawn closure
-    // the usual way, grab the app handle's state accessor inside the thread.
-    let app_for_thread = app.clone();
+    let scale_targets = vec![
+        (port_scale1, "scale1"),
+        (port_scale2, "scale2"),
+        (port_scale3, "scale3"),
+    ];
 
-    thread::spawn(move || {
-        let state = app_for_thread.state::<SerialState>();
+    const STALE_THRESHOLD: Duration = Duration::from_millis(132 * 6);
+    let app_for_broadcast = app.clone();
 
-        let mut port = match serialport::new(&port_name, baud_rate)
-            .timeout(Duration::from_millis(100))
-            .open()
-        {
-            Ok(port) => port,
-            Err(e) => {
-                eprintln!("Failed to open serial port: {}", e);
-                *state.status.lock().unwrap() = ConnectionStatus::Failed;
-                *state.last_error.lock().unwrap() = Some(format!("Failed to open {}: {}", port_name, e));
-                let _ = app_for_thread.emit("serial-error", format!("Failed to open {}: {}", port_name, e));
-                return;
-            }
-        };
+    // 1. Launch background readers for physical scales
+    for (port_name, id_str) in scale_targets {
+        if port_name.trim().is_empty() { continue; }
 
-        println!("Connected to {}", port_name);
-        *state.status.lock().unwrap() = ConnectionStatus::Connected;
-        *state.last_error.lock().unwrap() = None;
-        let _ = app_for_thread.emit("serial-connected", port_name.clone());
+        let app_for_thread = app.clone();
+        let id = id_str.to_string();
+        let p_name = port_name.clone();
 
-        let mut buffer = [0u8; 1024];
-        let mut line_buffer = String::new();
-        let mut last_reading_at = Instant::now();
-        let mut already_stale = false;
-       //const EXPECTED_INTERVAL: Duration = Duration::from_millis(132);
-        const STALE_THRESHOLD: Duration = Duration::from_millis(132 * 6); // tune to AE12's actual send interval
+        thread::spawn(move || {
+            let state_accessor = app_for_thread.state::<SerialState>();
+            let target_mutex = match id.as_str() {
+                "scale1" => &state_accessor.scale1,
+                "scale2" => &state_accessor.scale2,
+                _ => &state_accessor.scale3,
+            };
 
-        loop {
-            match port.read(&mut buffer) {
-                Ok(bytes_read) => {
-          if bytes_read > 0 {
-            let chunk = String::from_utf8_lossy(&buffer[..bytes_read]);
-            line_buffer.push_str(&chunk);
+            let mut port = match serialport::new(&p_name, baud_rate).timeout(Duration::from_millis(100)).open() {
+                Ok(p) => p,
+                Err(e) => {
+                    *state_accessor.status.lock().unwrap() = ConnectionStatus::Failed;
+                    *state_accessor.last_error.lock().unwrap() = Some(e.to_string());
+                    let _ = app_for_thread.emit("serial-error", e.to_string());
+                    return;
+                }
+            };
 
-                // Loop while we can find a '+' that isn't at the very start
-            while let Some(pos) = line_buffer
-                .char_indices()
-                .skip(1)
-                .find(|&(_, c)| c == '+')
-                .map(|(idx, _)| idx)
-            {
-                let line = line_buffer[..pos].trim().to_string();
-                line_buffer.drain(..pos);
+            *state_accessor.status.lock().unwrap() = ConnectionStatus::Connected;
+            let _ = app_for_thread.emit("serial-connected", p_name.clone());
 
-                if !line.is_empty() {
-                    println!("Processed packet: {}", line);
+            let mut buffer = [0u8; 1024];
+            let mut line_buffer = String::new();
+            let mut already_stale = false;
 
-                    if let Some(reading) = parse_weight_line(&line) {
-                        last_reading_at = Instant::now();
-                        if already_stale {
-                            already_stale = false;
-                            *state.status.lock().unwrap() = ConnectionStatus::Connected;
-                            *state.last_error.lock().unwrap() = None;
-                            let _ = app_for_thread.emit("serial-recovered", port_name.clone());
+            loop {
+                match port.read(&mut buffer) {
+                    Ok(bytes_read) => {
+                        if bytes_read > 0 {
+                            let chunk = String::from_utf8_lossy(&buffer[..bytes_read]);
+                            line_buffer.push_str(&chunk);
+
+                            while let Some(pos) = line_buffer.char_indices().skip(1).find(|&(_, c)| c == '+').map(|(idx, _)| idx) {
+                                let line = line_buffer[..pos].trim().to_string();
+                                line_buffer.drain(..pos);
+
+                                if !line.is_empty() {
+                                    if let Some(reading) = parse_weight_line(&line) {
+                                        let mut lock = target_mutex.lock().unwrap();
+                                        lock.last_reading_at = Instant::now();
+                                        lock.current_weight = reading.weight;
+                                        
+                                    
+                                    if already_stale {
+                                        already_stale = false;
+                                        lock.status = ConnectionStatus::Connected;
+                                        lock.last_error = None;
+                                        
+                                        //Emit which specific scale recovered
+                                        let _ = app_for_thread.emit("scale-recovered", id.clone());
+                                    }
+
+                                    }
+                                }
+                            }
                         }
-                        println!("Emitted weight reading: {:?}", reading);
-                        let _ = app_for_thread.emit("weight-data", reading);
-                        
-                    } else {
-                        eprintln!("Could not parse line: {}", line);
+                    }
+                 
+                    Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                        let elapsed = target_mutex.lock().unwrap().last_reading_at.elapsed();
+                        if !already_stale && elapsed > STALE_THRESHOLD {
+                            already_stale = true;
+                            
+                            // Update its personal structural state status slot to stale
+                            target_mutex.lock().unwrap().status = ConnectionStatus::Stale;
+                            
+                            //Emit which specific scale went stale instead of a global blanket event
+                            let _ = app_for_thread.emit("scale-stale", id.clone()); 
+                        }
+                    }
+                    Err(e) => {
+                        *state_accessor.status.lock().unwrap() = ConnectionStatus::Disconnected;
+                        let _ = app_for_thread.emit("serial-disconnected", e.to_string());
+                        break;
                     }
                 }
             }
+        });
+    }
 
-}
+    // 2. Scoreboard AND UI Broadcast Thread
+    // This loop handles transmitting values directly to your physical scoreboard,
+    // while simultaneously pushing the identical summed value to your UI Dashboard!
+    // ─── UPDATE THE MAIN TRANSMISSION LOOP IN YOUR RUST CODE ───
+    if !jumbo_port.trim().is_empty() {
+        thread::spawn(move || {
+            let state_accessor = app_for_broadcast.state::<SerialState>();
+            if let Ok(mut scoreboard) = serialport::new(&jumbo_port, 9600).open() {
+                loop {
+                    // Read scales and check their connection statuses
+                    let w1 = {
+                        let s = state_accessor.scale1.lock().unwrap();
+                        if s.status == ConnectionStatus::Connected { s.current_weight } else { 0 }
+                    };
+                    
+                    let w2 = {
+                        let s = state_accessor.scale2.lock().unwrap();
+                        if s.status == ConnectionStatus::Connected { s.current_weight } else { 0 }
+                    };
+                    
+                    let w3 = {
+                        let s = state_accessor.scale3.lock().unwrap();
+                        if s.status == ConnectionStatus::Connected { s.current_weight } else { 0 }
+                    };
 
+                    // Calculate sum using only active, fully connected indicators
+                    let total_sum = w1 + w2 + w3;
 
+                    // Write out to the physical Jumbo Scoreboard
+                    let frame_out = format!("{}\r\n", total_sum);
+                    let _ = scoreboard.write_all(frame_out.as_bytes());
+                    let _ = scoreboard.flush();
 
-        }
+                    // Emit the active live sum directly to your React context
+                    let _ = app_for_broadcast.emit("summed-weight-data", WeightReading {
+                        weight: total_sum,
+                        unit: "kg".to_string(),
+                        stable: true,
+                        mode: "gross".to_string(),
+                    });
 
-        Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {
-            // No new bytes this cycle — check if we've gone too long without one
-            if !already_stale && last_reading_at.elapsed() > STALE_THRESHOLD {
-                already_stale = true;
-                *state.status.lock().unwrap() = ConnectionStatus::Stale;
-                *state.last_error.lock().unwrap() =
-                    Some("No data received recently — indicator may be powered off".to_string());
-                let _ = app_for_thread.emit(
-                    "serial-stale",
-                    "No data received recently — indicator may be powered off",
-                );
+                    thread::sleep(Duration::from_millis(200));
+                }
             }
-        }
+        });
+    }
 
-        Err(e) => {
-            eprintln!("Serial read error: {}", e);
-            *state.status.lock().unwrap() = ConnectionStatus::Disconnected;
-            *state.last_error.lock().unwrap() = Some(format!("Lost connection to {}: {}", port_name, e));
-            let _ = app_for_thread.emit(
-                "serial-disconnected",
-                format!("Lost connection to {}: {}", port_name, e),
-            );
-            break;
-        }
-
-
-            }
-        }
-    
-    
-    });
 
     Ok(())
 }
@@ -316,55 +395,83 @@ fn get_serial_ports() -> Result<Vec<SerialPortInfo>, String> {
 
 
 #[derive(serde::Serialize)]
-struct ConnectionStatusResponse {
+struct ScaleStatus {
     status: ConnectionStatus,
     error: Option<String>,
+    current_weight: i64,
+}
+
+#[derive(serde::Serialize)]
+struct ConnectionStatusResponse {
+    scale1: ScaleStatus,
+    scale2: ScaleStatus,
+    scale3: ScaleStatus,
+    system_active: bool,
 }
 
 #[tauri::command]
 fn get_connection_status(state: tauri::State<SerialState>) -> ConnectionStatusResponse {
+    let s1 = state.scale1.lock().unwrap();
+    let s2 = state.scale2.lock().unwrap();
+    let s3 = state.scale3.lock().unwrap();
+    
     ConnectionStatusResponse {
-        status: state.status.lock().unwrap().clone(),
-        error: state.last_error.lock().unwrap().clone(),
+        scale1: ScaleStatus {
+            status: s1.status.clone(),
+            error: s1.last_error.clone(),
+            current_weight: s1.current_weight,
+        },
+        scale2: ScaleStatus {
+            status: s2.status.clone(),
+            error: s2.last_error.clone(),
+            current_weight: s2.current_weight,
+        },
+        scale3: ScaleStatus {
+            status: s3.status.clone(),
+            error: s3.last_error.clone(),
+            current_weight: s3.current_weight,
+        },
+        system_active: *state.system_active.lock().unwrap(),
     }
 }
-#[tauri::command]
-fn auto_detect_baud(port_name: String) -> Result<Option<u32>, String> {
-    let common_rates = vec![9600, 4800, 2400, 600,1200];
-    let mut buffer = [0u8; 1024];
 
-    for &rate in &common_rates {
-        match serialport::new(&port_name, rate)
-            .timeout(Duration::from_millis(500))
-            .open()
-        {
-            Ok(mut port) => {
-                // Try a few reads per rate instead of just one
-                for _ in 0..5 {
-                    match port.read(&mut buffer) {
-                        Ok(bytes_read) if bytes_read > 0 => {
-                            let sample = String::from_utf8_lossy(&buffer[..bytes_read]);
-                            println!("rate {}: got {} bytes: {:?}", rate, bytes_read, sample);
-                            if sample.contains('+') || sample.contains('-') {
-                                println!("🎯 Detected baud rate: {}", rate);
-                                return Ok(Some(rate));
-                            }
-                        }
-                        Ok(_) => continue, // 0 bytes, try again
-                        Err(e) => {
-                            eprintln!("read error at {}: {:?}", rate, e);
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                eprintln!("failed to open {} at {}: {:?}", port_name, rate, e);
-            }
-        }
-    }
+// #[tauri::command]
+// fn auto_detect_baud(port_name: String) -> Result<Option<u32>, String> {
+//     let common_rates = vec![9600, 4800, 2400, 600,1200];
+//     let mut buffer = [0u8; 1024];
 
-    Ok(None)
-}
+//     for &rate in &common_rates {
+//         match serialport::new(&port_name, rate)
+//             .timeout(Duration::from_millis(500))
+//             .open()
+//         {
+//             Ok(mut port) => {
+//                 // Try a few reads per rate instead of just one
+//                 for _ in 0..5 {
+//                     match port.read(&mut buffer) {
+//                         Ok(bytes_read) if bytes_read > 0 => {
+//                             let sample = String::from_utf8_lossy(&buffer[..bytes_read]);
+//                             println!("rate {}: got {} bytes: {:?}", rate, bytes_read, sample);
+//                             if sample.contains('+') || sample.contains('-') {
+//                                 println!("🎯 Detected baud rate: {}", rate);
+//                                 return Ok(Some(rate));
+//                             }
+//                         }
+//                         Ok(_) => continue, // 0 bytes, try again
+//                         Err(e) => {
+//                             eprintln!("read error at {}: {:?}", rate, e);
+//                         }
+//                     }
+//                 }
+//             }
+//             Err(e) => {
+//                 eprintln!("failed to open {} at {}: {:?}", port_name, rate, e);
+//             }
+//         }
+//     }
+
+//     Ok(None)
+// }
 
 #[tauri::command]
 fn close_splashscreen(app_handle: tauri::AppHandle) {
@@ -531,7 +638,7 @@ pub fn run() {
             start_serial_reading,
             refresh_serial_ports,
             get_connection_status,
-            auto_detect_baud,
+            // auto_detect_baud,
             close_splashscreen
         ]) .setup(|app| {
             let splash_clone = app.get_webview_window("splashscreen").unwrap();
@@ -544,6 +651,7 @@ pub fn run() {
                 .title("SmartWeigh")
                 .visible(false)
                 .maximized(true)
+                .inner_size(1920.0, 1080.0)
                 .background_color(tauri::window::Color(15, 23, 41, 255))
                 .build()?;
             // main.show().unwrap();

@@ -43,24 +43,24 @@ export type TicketRecord = {
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
 /* ------------------------------------------------------------------ */
-export type Weighing = {
-  id: string;
-  ticketNumber: string;
-  vehicleId: string;      // plate_number
-  company: string;        // vehicles.transporter
-  tare: number;
-  gross: number;
-  net: number;
-  limit: number;          // weighing_records.max_allowed_weight
-  unit: string;
-  operator: string;       // users.name
-  driver: string;         // vehicles.driver_name
-  material: string | null;
-  destination: string | null;
-  date: string;
-  time: string;
-  status: "Pass" | "Overload";
-};
+// export type Weighing = {
+//   id: string;
+//   ticketNumber: string;
+//   vehicleId: string;      // plate_number
+//   company: string;        // vehicles.transporter
+//   tare: number;
+//   gross: number;
+//   net: number;
+//   limit: number;          // weighing_records.max_allowed_weight
+//   unit: string;
+//   operator: string;       // users.name
+//   driver: string;         // vehicles.driver_name
+//   material: string | null;
+//   destination: string | null;
+//   date: string;
+//   time: string;
+//   status: "Pass" | "Overload";
+// };
 
 export type ShiftChange = {
   id: string;
@@ -91,22 +91,7 @@ export type ReportFilters = {
 /* ------------------------------------------------------------------ */
 /* Row shapes returned by SQLite (raw column names)                    */
 /* ------------------------------------------------------------------ */
-type WeighingRow = {
-  id: number;
-  ticket_number: string;
-  plate_number: string;
-  transporter: string;
-  tare_weight: number;
-  gross_weight: number;
-  net_weight: number;
-  max_allowed_weight: number;
-  unit: string;
-  operator_name: string;
-  driver_name: string | null;
-  material: string | null;
-  destination: string | null;
-  created_at: string; // "YYYY-MM-DD HH:MM:SS" (SQLite CURRENT_TIMESTAMP format)
-};
+
 
 export async function createUser(username:string,useremail:string,userpassword:string,userrole:string) {
    await db.execute(
@@ -125,6 +110,14 @@ export async function createUser(username:string,useremail:string,userpassword:s
 export async function ReadUsers() {
  const users = await db.select<User[]>("SELECT * FROM users");
  return users;
+}
+
+export async function ReadUserById(id: number): Promise<string | null> {
+  const rows = await db.select<{ name: string }[]>(
+    "SELECT name FROM users WHERE id = ?",
+    [id]
+  );
+  return rows[0]?.name ?? null;
 }
 
 export async function ChangeUserRole(userId: number, newRole: string) {
@@ -233,25 +226,73 @@ function splitDateTime(createdAt: string): { date: string; time: string } {
   return { date, time: time ? time.slice(0, 5) : "" };
 }
 
-function mapWeighingRow(row: WeighingRow): Weighing {
-  const { date, time } = splitDateTime(row.created_at);
+
+
+export type WeighingRow = {
+  id: number;
+  ticket_number: string;
+  plate_number: string;
+  transporter: string | null;
+  tare_weight: number | null;
+  gross_weight: number | null;
+  net_weight: number | null;
+  max_allowed_weight: number | null;
+  unit: string | null;
+  operator_name: string | null;
+  driver_name: string | null;
+  material: string | null;
+  destination: string | null;
+  weighing_status: string | null;
+  created_at: string;
+};
+
+export type Weighing = {
+  id: string;
+  ticketNumber: string;
+  vehicleId: string;
+  company: string;
+  material: string;
+  destination: string;
+  tare: number;
+  gross: number;
+  net: number;
+  limit: number;
+  operator: string;
+  driver: string;
+  date: string;
+  time: string;
+  status: "Pass" | "Overload";
+};
+
+function mapWeighingRow(r: WeighingRow): Weighing {
+  const d = new Date(r.created_at);
+  const ok = !isNaN(d.getTime());
+  const pad = (n: number) => String(n).padStart(2, "0");
+
+  const gross = Number(r.gross_weight) || 0;
+  const limit = Number(r.max_allowed_weight) || 0;
+  const overloaded = r.weighing_status
+    ? r.weighing_status === "overweight"
+    : limit > 0 && gross > limit;
+
   return {
-    id: String(row.id),
-    ticketNumber: row.ticket_number,
-    vehicleId: row.plate_number,
-    company: row.transporter,
-    tare: row.tare_weight,
-    gross: row.gross_weight,
-    net: row.net_weight,
-    limit: row.max_allowed_weight,
-    unit: row.unit,
-    operator: row.operator_name ?? "Unknown",
-    driver: row.driver_name ?? "—",
-    material: row.material,
-    destination: row.destination,
-    date,
-    time,
-    status: row.net_weight > row.max_allowed_weight ? "Overload" : "Pass",
+    id: String(r.id),
+    ticketNumber: r.ticket_number,
+    vehicleId: r.plate_number,
+    company: r.transporter ?? "",
+    material: r.material ?? "",
+    destination: r.destination ?? "",
+    tare: Number(r.tare_weight) || 0,
+    gross,
+    net: Number(r.net_weight) || 0,
+    limit,
+    operator: r.operator_name ?? "",
+    driver: r.driver_name ?? "",
+    // local date/time, so a ticket weighed after midnight in Tanzania
+    // is not filed under the previous (UTC) day
+    date: ok ? `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` : "",
+    time: ok ? `${pad(d.getHours())}:${pad(d.getMinutes())}` : "",
+    status: overloaded ? "Overload" : "Pass",
   };
 }
 

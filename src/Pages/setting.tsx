@@ -80,11 +80,10 @@ const inputClass =
 /*  Sidebar                                                               */
 /* -------------------------------------------------------------------- */
 
-type TabKey = "com" | "camera" | "printer" |"party" | "commodity" | "plate" | "trucktype" | "Report" | "Operator";
+type TabKey = "com" | "printer" |"party" | "commodity" | "plate" | "trucktype" | "Report" | "Operator";
 
 const TABS: { key: TabKey; label: string; icon: typeof Usb }[] = [
   { key: "com", label: "COM", icon: Usb },
-  { key: "camera", label: "Camera", icon: Video },
   { key: "printer", label: "Printer", icon: PrinterIcon },
   { key: "party", label: "Party Name", icon: Users },
   { key: "commodity", label: "Commodity", icon: Package },
@@ -144,69 +143,132 @@ function Sidebar({ active, onSelect }: { active: TabKey; onSelect: (k: TabKey) =
 
 type Serialinfo = { name: string; port_type: string };
 type ScaleSettings = {
-  selectedSerialPort: string;
+  indicator1Port: string;
+  indicator2Port: string;
+  indicator3Port: string;
+  jumboDisplayPort: string;
   baudRate: number;
   dataBits: number;
-  parity: "None" | "Even" | "Odd";
+  parity: string;
   stopBits: number;
 };
+
 const defaultScaleSettings: ScaleSettings = {
-  selectedSerialPort: "",
+  indicator1Port: "",
+  indicator2Port: "",
+  indicator3Port: "",
+  jumboDisplayPort: "",
   baudRate: 9600,
   dataBits: 8,
   parity: "None",
   stopBits: 1,
 };
 
+const SCALE_SETTINGS_KEY = "scale-settings";
+
+type PortKey = "indicator1Port" | "indicator2Port" | "indicator3Port" | "jumboDisplayPort";
+
+const PORT_FIELDS: { key: PortKey; label: string }[] = [
+  { key: "indicator1Port", label: "INDICATOR 1" },
+  { key: "indicator2Port", label: "INDICATOR 2" },
+  { key: "indicator3Port", label: "INDICATOR 3" },
+  { key: "jumboDisplayPort", label: "JUMBO DISPLAY PORT" },
+];
+
+export function loadScaleSettings(): ScaleSettings | null {
+  try {
+    const raw = localStorage.getItem(SCALE_SETTINGS_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+
+    // Migrate old format that only had a single "selectedSerialPort"
+    if (parsed.selectedSerialPort && !parsed.indicator1Port) {
+      parsed.indicator1Port = parsed.selectedSerialPort;
+    }
+    delete parsed.selectedSerialPort;
+
+    // Merge with defaults so missing fields never become undefined
+    return { ...defaultScaleSettings, ...parsed };
+  } catch (e) {
+    console.error("Failed to parse scale settings:", e);
+    return null;
+  }
+}
+
+function persistScaleSettings(settings: ScaleSettings): boolean {
+  try {
+    localStorage.setItem(SCALE_SETTINGS_KEY, JSON.stringify(settings));
+    return true;
+  } catch (e) {
+    console.error("Failed to save scale settings:", e);
+    return false;
+  }
+}
+
+// ---- Component ----
 function ComSettingsTab() {
-  const SCALE_SETTINGS_KEY = "scale-settings";
   const [scaleSettings, setScaleSettings] = useState<ScaleSettings>(defaultScaleSettings);
   const [savedScaleSettings, setSavedScaleSettings] = useState<ScaleSettings | null>(null);
   const [settingsMessage, setSettingsMessage] = useState<string | null>(null);
-  const [serialport, setSerialPort] = useState<Serialinfo[]>([]);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [serialPorts, setSerialPorts] = useState<Serialinfo[]>([]);
 
   useEffect(() => {
-    const savedScale = localStorage.getItem(SCALE_SETTINGS_KEY);
-    if (savedScale) {
-      try {
-        const parsed: ScaleSettings = JSON.parse(savedScale);
-        setScaleSettings(parsed);
-        setSavedScaleSettings(parsed);
-      } catch (e) {
-        console.error("Failed to parse scale settings:", e);
-      }
+    const saved = loadScaleSettings();
+    if (saved) {
+      setScaleSettings(saved);
+      setSavedScaleSettings(saved);
     }
-    invoke<Serialinfo[]>("get_serial_ports").then(setSerialPort).catch(console.error);
+    invoke<Serialinfo[]>("get_serial_ports").then(setSerialPorts).catch(console.error);
   }, []);
 
+  // Ports that are chosen more than once (empty = not selected, ignored)
+  const selectedPorts = PORT_FIELDS.map((f) => scaleSettings[f.key]).filter(Boolean);
+  const duplicatePorts = selectedPorts.filter((p, i) => selectedPorts.indexOf(p) !== i);
+  const hasDuplicates = duplicatePorts.length > 0;
+
   const handleSaveSettings = () => {
-    localStorage.setItem(SCALE_SETTINGS_KEY, JSON.stringify(scaleSettings));
+    if (hasDuplicates) {
+      setErrorMessage(`Each device needs its own port. Duplicate: ${[...new Set(duplicatePorts)].join(", ")}`);
+      return;
+    }
+    if (!persistScaleSettings(scaleSettings)) {
+      setErrorMessage("Could not save settings.");
+      return;
+    }
+    setErrorMessage(null);
     setSavedScaleSettings(scaleSettings);
     window.dispatchEvent(new Event("scale-settings-changed"));
     setSettingsMessage("Scale configuration saved successfully.");
     setTimeout(() => setSettingsMessage(null), 3000);
   };
 
-  const serialConfigured = savedScaleSettings !== null && savedScaleSettings.selectedSerialPort !== "";
+  const serialConfigured =
+    savedScaleSettings !== null && savedScaleSettings.indicator1Port !== "";
 
   return (
     <div className="grid gap-5 xl:grid-cols-[1.35fr_0.65fr]">
-      <Panel className="p-6 bg-blue-200" >
+      <Panel className="p-6 bg-blue-200">
         <div className="space-y-5">
-          <Field label="Serial Port">
-            <select
-              value={scaleSettings.selectedSerialPort}
-              onChange={(e) => setScaleSettings({ ...scaleSettings, selectedSerialPort: e.target.value })}
-              className={inputClass}
-            >
-              <option value="">Select serial port</option>
-              {serialport.map((port) => (
-                <option key={port.name} value={port.name}>
-                  {port.name}{port.port_type ? ` — ${port.port_type}` : ""}
-                </option>
-              ))}
-            </select>
-          </Field>
+          <div className="grid gap-4 md:grid-cols-2">
+            {PORT_FIELDS.map(({ key, label }) => (
+              <Field key={key} label={label}>
+                <select
+                  value={scaleSettings[key]}
+                  onChange={(e) => setScaleSettings({ ...scaleSettings, [key]: e.target.value })}
+                  className={inputClass}
+                >
+                  <option value="">Select serial port</option>
+                  {serialPorts.map((port) => (
+                    <option key={port.name} value={port.name}>
+                      {port.name}
+                      {port.port_type ? ` — ${port.port_type}` : ""}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            ))}
+          </div>
 
           <div className="grid gap-4 md:grid-cols-2">
             <Field label="Baud Rate">
@@ -216,43 +278,9 @@ function ComSettingsTab() {
                 className={inputClass}
               >
                 {[1200, 9600, 19200, 38400, 57600, 115200].map((baud) => (
-                  <option key={baud} value={baud}>{baud}</option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Data Bits">
-              <select
-                value={scaleSettings.dataBits}
-                onChange={(e) => setScaleSettings({ ...scaleSettings, dataBits: Number(e.target.value) })}
-                className={inputClass}
-              >
-                {[5, 6, 7, 8].map((bits) => (
-                  <option key={bits} value={bits}>{bits}</option>
-                ))}
-              </select>
-            </Field>
-          </div>
-
-          <div className="grid gap-4 md:grid-cols-2">
-            <Field label="Parity">
-              <select
-                value={scaleSettings.parity}
-                onChange={(e) => setScaleSettings({ ...scaleSettings, parity: e.target.value as ScaleSettings["parity"] })}
-                className={inputClass}
-              >
-                {["None", "Even", "Odd"].map((o) => (
-                  <option key={o} value={o}>{o}</option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Stop Bits">
-              <select
-                value={scaleSettings.stopBits}
-                onChange={(e) => setScaleSettings({ ...scaleSettings, stopBits: Number(e.target.value) })}
-                className={inputClass}
-              >
-                {[1, 2].map((bits) => (
-                  <option key={bits} value={bits}>{bits}</option>
+                  <option key={baud} value={baud}>
+                    {baud}
+                  </option>
                 ))}
               </select>
             </Field>
@@ -261,19 +289,28 @@ function ComSettingsTab() {
           <div className="flex flex-wrap items-center gap-4 border-t pt-5" style={{ borderColor: C.border }}>
             <button
               onClick={handleSaveSettings}
-              className="rounded-lg px-5 py-2.5 text-sm font-bold text-blue-transition hover:brightness-110"
+              className="rounded-lg px-5 py-2.5 text-sm font-bold text-black hover:brightness-110"
               style={{ background: C.green }}
             >
               Save Scale Configuration
             </button>
-            {settingsMessage && <span className="text-xs font-semibold" style={{ color: C.green }}>✓ {settingsMessage}</span>}
+            {settingsMessage && (
+              <span className="text-xs font-semibold" style={{ color: C.green }}>✓ {settingsMessage}</span>
+            )}
+            {(errorMessage || hasDuplicates) && (
+              <span className="text-xs font-semibold text-red-600">
+                ⚠ {errorMessage ?? `Duplicate port selected: ${[...new Set(duplicatePorts)].join(", ")}`}
+              </span>
+            )}
           </div>
         </div>
       </Panel>
 
       <Panel className="px-6 py-3 bg-blue-200">
         <div className="flex items-start justify-between">
-          <p className="text-xs font-bold uppercase tracking-[0.18em]" style={{ color: C.orange }}>Current Configuration</p>
+          <p className="text-xs font-bold uppercase tracking-[0.18em]" style={{ color: C.orange }}>
+            Current Configuration
+          </p>
           <div
             className="flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-bold"
             style={{
@@ -287,112 +324,20 @@ function ComSettingsTab() {
           </div>
         </div>
         <div className="mt-3">
-          <SettingRow label="Port" value={savedScaleSettings?.selectedSerialPort || "Not selected"} />
-          <SettingRow label="Baud Rate" value={savedScaleSettings?.baudRate || "-"} />
-          <SettingRow label="Data Bits" value={savedScaleSettings?.dataBits || "-"} />
-          <SettingRow label="Parity" value={savedScaleSettings?.parity || "-"} />
-          <SettingRow label="Stop Bits" value={savedScaleSettings?.stopBits || "-"} />
+          {PORT_FIELDS.map(({ key, label }) => (
+            <SettingRow key={key} label={label} value={savedScaleSettings?.[key] || "Not selected"} />
+          ))}
+          <SettingRow label="Baud Rate" value={savedScaleSettings?.baudRate ?? "-"} />
+          <SettingRow label="Data Bits" value={savedScaleSettings?.dataBits ?? "-"} />
+          <SettingRow label="Parity" value={savedScaleSettings?.parity ?? "-"} />
+          <SettingRow label="Stop Bits" value={savedScaleSettings?.stopBits ?? "-"} />
         </div>
       </Panel>
     </div>
   );
 }
 
-/* -------------------------------------------------------------------- */
-/*  Camera settings                                                      */
-/* -------------------------------------------------------------------- */
 
-type CameraSettings = { frontCameraUrl: string; rearCameraUrl: string; enabled: boolean };
-const defaultCameraSettings: CameraSettings = { frontCameraUrl: "", rearCameraUrl: "", enabled: false };
-
-function CameraSettingsTab() {
-  const [cameraSettings, setCameraSettings] = useState<CameraSettings>(defaultCameraSettings);
-  const [cameraMessage, setCameraMessage] = useState<string | null>(null);
-
-  useEffect(() => {
-    const savedCamera = localStorage.getItem("camera-settings");
-    if (savedCamera) {
-      try {
-        setCameraSettings(JSON.parse(savedCamera));
-      } catch (e) {
-        console.error("Failed to parse camera settings:", e);
-      }
-    }
-  }, []);
-
-  const handleSaveCameraSettings = async () => {
-    localStorage.setItem("camera-settings", JSON.stringify(cameraSettings));
-    try {
-      if (cameraSettings.enabled) {
-        if (cameraSettings.frontCameraUrl.trim()) {
-          await invoke("start_camera_stream", { streamName: "front", url: cameraSettings.frontCameraUrl.trim() });
-        }
-        if (cameraSettings.rearCameraUrl.trim()) {
-          await invoke("start_camera_stream", { streamName: "rear", url: cameraSettings.rearCameraUrl.trim() });
-        }
-      } else {
-        await invoke("stop_camera_stream", { streamName: "front" });
-        await invoke("stop_camera_stream", { streamName: "rear" });
-      }
-    } catch (e) {
-      console.error("Failed to toggle CCTV streams:", e);
-    }
-    setCameraMessage(cameraSettings.enabled ? "CCTV settings saved and live stream start requested." : "CCTV settings saved. Streams are disabled.");
-    setTimeout(() => setCameraMessage(null), 3000);
-  };
-
-  return (
-    <Panel className="p-6">
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <div>
-          <p className="text-xs font-bold uppercase tracking-[0.18em]" style={{ color: C.orange }}>CCTV / RTSP Camera</p>
-          <h3 className="mt-2 text-lg font-semibold" style={{ color: C.text }}>Live weighbridge camera configuration</h3>
-        </div>
-        <label className="inline-flex text-black items-center gap-2 rounded border px-3 py-1.5 text-xs font-bold uppercase" style={{ borderColor: C.border }}>
-          <input
-            type="checkbox"
-            checked={cameraSettings.enabled}
-            onChange={(e) => setCameraSettings({ ...cameraSettings, enabled: e.target.checked })}
-            className="h-4 w-4 accent-green-500"
-          />
-          Enabled
-        </label>
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Field label="Front Camera RTSP URL">
-          <input
-            type="text"
-            placeholder="rtsp://192.168.1.50:554/stream"
-            value={cameraSettings.frontCameraUrl}
-            onChange={(e) => setCameraSettings({ ...cameraSettings, frontCameraUrl: e.target.value })}
-            className={inputClass}
-          />
-        </Field>
-        <Field label="Rear Camera RTSP URL">
-          <input
-            type="text"
-            placeholder="rtsp://192.168.1.51:554/stream"
-            value={cameraSettings.rearCameraUrl}
-            onChange={(e) => setCameraSettings({ ...cameraSettings, rearCameraUrl: e.target.value })}
-            className={inputClass}
-          />
-        </Field>
-      </div>
-
-      <div className="mt-5 flex flex-wrap items-center gap-4">
-        <button
-          onClick={handleSaveCameraSettings}
-          className="rounded-lg px-5 py-2.5 text-sm font-bold text-blue-transition hover:brightness-110"
-          style={{ background: C.orange }}
-        >
-          Save Camera Configuration
-        </button>
-        {cameraMessage && <span className="text-xs font-semibold" style={{ color: C.green }}>✓ {cameraMessage}</span>}
-      </div>
-    </Panel>
-  );
-}
 
 /* -------------------------------------------------------------------- */
 /*  Printer settings (still via Rust — not "table data")                 */
@@ -687,7 +632,6 @@ export default function Setting() {
 
       <main className="flex-1 overflow-y-hidden p-5 lg:p-7">
         {activeTab === "com" && <ComSettingsTab />}
-        {activeTab === "camera" && <CameraSettingsTab />}
         {activeTab === "printer" && <PrinterSettingsTab />}
         
         {activeTab === "party" && (

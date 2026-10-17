@@ -33,4 +33,5 @@ url = "2.5.8"
 base64 = "0.23.1"
 image = { version = "0.25", features = ["jpeg"] }
 tokio-util = "0.7.19"
+tauri-plugin-licenseseat = "0.6.3"
 
